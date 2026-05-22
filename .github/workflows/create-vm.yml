@@ -80,6 +80,28 @@ jobs:
           echo "running_count=$RUNNING_COUNT" >> "$GITHUB_OUTPUT"
           echo "provisioning_count=$PROVISIONING_COUNT" >> "$GITHUB_OUTPUT"
 
+      - name: Validate OCI resources
+        run: |
+          set -e
+
+          echo "Validate availability domains..."
+          oci iam availability-domain list \
+            --compartment-id "$COMPARTMENT_ID" \
+            --query "data[].name" \
+            --raw-output
+
+          echo "Validate subnet..."
+          oci network subnet get \
+            --subnet-id "$SUBNET_ID" \
+            --query "data.{id:id,cidr:\"cidr-block\",access:\"prohibit-public-ip-on-vnic\"}" \
+            --raw-output
+
+          echo "Validate image..."
+          oci compute image get \
+            --image-id "$IMAGE_ID" \
+            --query "data.{id:id,displayName:\"display-name\",operatingSystem:\"operating-system\",architecture:architecture}" \
+            --raw-output
+
       - name: Stop if instance already exists
         if: steps.check.outputs.running_count != '0' || steps.check.outputs.provisioning_count != '0'
         run: |
@@ -103,7 +125,7 @@ jobs:
             --display-name "$DISPLAY_NAME" \
             --shape "VM.Standard.A1.Flex" \
             --shape-config '{"ocpus":2,"memoryInGBs":12}' \
-            --image-id "$IMAGE_ID" \
+            --source-details "{\"sourceType\":\"image\",\"imageId\":\"$IMAGE_ID\"}" \
             --subnet-id "$SUBNET_ID" \
             --assign-public-ip true \
             --metadata "{\"ssh_authorized_keys\":\"$SSH_PUBLIC_KEY\"}" \
