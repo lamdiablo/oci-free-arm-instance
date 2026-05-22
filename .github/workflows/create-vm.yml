@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      SUPPRESS_LABEL_WARNING: true
+
       COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
       SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
       IMAGE_ID: ${{ secrets.IMAGE_ID }}
@@ -24,7 +26,7 @@ jobs:
       SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
       DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
 
-      DISPLAY_NAME: free-arm-ubuntu
+      DISPLAY_NAME: coolify-vm
 
     steps:
       - name: Install OCI CLI
@@ -34,51 +36,23 @@ jobs:
 
       - name: Configure OCI CLI
         run: |
-          mkdir -p ~/.oci
+          mkdir -p /home/runner/.oci
 
-          printf "%s" "$OCI_CLI_KEY_CONTENT" > ~/.oci/oci_api_key.pem
-          chmod 600 ~/.oci/oci_api_key.pem
+          printf "%s" "$OCI_CLI_KEY_CONTENT" > /home/runner/.oci/oci_api_key.pem
+          chmod 600 /home/runner/.oci/oci_api_key.pem
 
-          cat > ~/.oci/config <<EOF
+          cat > /home/runner/.oci/config <<EOF
           [DEFAULT]
           user=$OCI_CLI_USER
           fingerprint=$OCI_CLI_FINGERPRINT
           tenancy=$OCI_CLI_TENANCY
           region=$OCI_CLI_REGION
-          key_file=~/.oci/oci_api_key.pem
+          key_file=/home/runner/.oci/oci_api_key.pem
           EOF
 
-          chmod 600 ~/.oci/config
+          chmod 600 /home/runner/.oci/config
 
-      - name: Check existing instance
-        id: check
-        run: |
-          set +e
-
-          RUNNING_COUNT=$(oci compute instance list \
-            --compartment-id "$COMPARTMENT_ID" \
-            --display-name "$DISPLAY_NAME" \
-            --lifecycle-state RUNNING \
-            --all \
-            --query "length(data)" \
-            --raw-output 2>/tmp/running_error.log)
-
-          PROVISIONING_COUNT=$(oci compute instance list \
-            --compartment-id "$COMPARTMENT_ID" \
-            --display-name "$DISPLAY_NAME" \
-            --lifecycle-state PROVISIONING \
-            --all \
-            --query "length(data)" \
-            --raw-output 2>/tmp/provisioning_error.log)
-
-          RUNNING_COUNT=${RUNNING_COUNT:-0}
-          PROVISIONING_COUNT=${PROVISIONING_COUNT:-0}
-
-          echo "RUNNING_COUNT=$RUNNING_COUNT"
-          echo "PROVISIONING_COUNT=$PROVISIONING_COUNT"
-
-          echo "running_count=$RUNNING_COUNT" >> "$GITHUB_OUTPUT"
-          echo "provisioning_count=$PROVISIONING_COUNT" >> "$GITHUB_OUTPUT"
+          printf "%s" "$SSH_PUBLIC_KEY" > /home/runner/my_ssh_key.pub
 
       - name: Validate OCI resources
         run: |
@@ -93,7 +67,7 @@ jobs:
           echo "Validate subnet..."
           oci network subnet get \
             --subnet-id "$SUBNET_ID" \
-            --query "data.{id:id,cidr:\"cidr-block\",access:\"prohibit-public-ip-on-vnic\"}" \
+            --query "data.{id:id,cidr:\"cidr-block\",publicSubnet:\"prohibit-public-ip-on-vnic\"}" \
             --raw-output
 
           echo "Validate image..."
@@ -102,46 +76,58 @@ jobs:
             --query "data.{id:id,displayName:\"display-name\",operatingSystem:\"operating-system\",architecture:architecture}" \
             --raw-output
 
-      - name: Stop if instance already exists
-        if: steps.check.outputs.running_count != '0' || steps.check.outputs.provisioning_count != '0'
+      - name: Try to create OCI ARM instance
+        id: create_vm
+        continue-on-error: true
         run: |
-          echo "Instance already exists or is provisioning. Stop."
+          set -o pipefail
 
-          curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"OCI VM already exists or is provisioning. Workflow stopped.\"}" \
-            "$DISCORD_WEBHOOK_URL"
-
-      - name: Create OCI ARM instance
-        id: create_instance
-        if: steps.check.outputs.running_count == '0' && steps.check.outputs.provisioning_count == '0'
-        run: |
-          set -e
-
-          echo "Trying to create OCI ARM instance..."
-
-          oci compute instance launch \
-            --availability-domain "$AD_NAME" \
+          OCI_OUTPUT=$(oci compute instance launch \
             --compartment-id "$COMPARTMENT_ID" \
-            --display-name "$DISPLAY_NAME" \
+            --availability-domain "$AD_NAME" \
             --shape "VM.Standard.A1.Flex" \
             --shape-config '{"ocpus":2,"memoryInGBs":12}' \
-            --source-details "{\"sourceType\":\"image\",\"imageId\":\"$IMAGE_ID\"}" \
             --subnet-id "$SUBNET_ID" \
+            --image-id "$IMAGE_ID" \
+            --ssh-authorized-keys-file "/home/runner/my_ssh_key.pub" \
             --assign-public-ip true \
-            --metadata "{\"ssh_authorized_keys\":\"$SSH_PUBLIC_KEY\"}" \
-            --boot-volume-size-in-gbs 100 \
-            --wait-for-state RUNNING
+            --display-name "$DISPLAY_NAME" \
+            --boot-volume-size-in-gbs 50 2>&1 || true)
 
-      - name: Notify success
-        if: steps.create_instance.outcome == 'success'
-        run: |
-          curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"✅ OCI ARM instance created successfully. Check Oracle Cloud Console.\"}" \
-            "$DISCORD_WEBHOOK_URL"
+          echo "$OCI_OUTPUT"
 
-      - name: Notify failure
-        if: failure()
+          echo "log_data<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$OCI_OUTPUT" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+          if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
+            echo "status=created" >> "$GITHUB_OUTPUT"
+            echo "VM is being created."
+            exit 0
+          elif echo "$OCI_OUTPUT" | grep -q 'Out of host capacity'; then
+            echo "status=capacity" >> "$GITHUB_OUTPUT"
+            echo "Out of host capacity. Will retry later."
+            exit 0
+          else
+            echo "status=error" >> "$GITHUB_OUTPUT"
+            echo "Real error detected."
+            exit 1
+          fi
+
+      - name: Notify Discord
+        if: always()
         run: |
+          STATUS="${{ steps.create_vm.outputs.status }}"
+          LOG="${{ steps.create_vm.outputs.log_data }}"
+
+          if [ "$STATUS" = "created" ]; then
+            MESSAGE="🚀 OCI ARM VM CREATED! Disable the workflow now."
+          elif [ "$STATUS" = "capacity" ]; then
+            MESSAGE="⏳ Waiting for OCI capacity. Will retry later."
+          else
+            MESSAGE="❌ OCI VM creation error. Check GitHub Actions logs."
+          fi
+
           curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"❌ OCI ARM instance creation failed. Check GitHub Actions logs. If the error says Out of host capacity, just wait for retry.\"}" \
+            -d "{\"content\":\"$MESSAGE\"}" \
             "$DISCORD_WEBHOOK_URL"
