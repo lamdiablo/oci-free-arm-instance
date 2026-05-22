@@ -35,6 +35,7 @@ jobs:
       - name: Configure OCI CLI
         run: |
           mkdir -p ~/.oci
+
           printf "%s" "$OCI_CLI_KEY_CONTENT" > ~/.oci/oci_api_key.pem
           chmod 600 ~/.oci/oci_api_key.pem
 
@@ -83,11 +84,14 @@ jobs:
         if: steps.check.outputs.running_count != '0' || steps.check.outputs.provisioning_count != '0'
         run: |
           echo "Instance already exists or is provisioning. Stop."
+
           curl -H "Content-Type: application/json" \
             -d "{\"content\":\"OCI VM already exists or is provisioning. Workflow stopped.\"}" \
             "$DISCORD_WEBHOOK_URL"
 
       - name: Create OCI ARM instance
+        id: create_instance
+        if: steps.check.outputs.running_count == '0' && steps.check.outputs.provisioning_count == '0'
         run: |
           set -e
 
@@ -99,22 +103,23 @@ jobs:
             --display-name "$DISPLAY_NAME" \
             --shape "VM.Standard.A1.Flex" \
             --shape-config '{"ocpus":2,"memoryInGBs":12}' \
-            --source-details "{\"sourceType\":\"image\",\"imageId\":\"$IMAGE_ID\"}" \
-            --create-vnic-details "{\"subnetId\":\"$SUBNET_ID\",\"assignPublicIp\":true}" \
+            --image-id "$IMAGE_ID" \
+            --subnet-id "$SUBNET_ID" \
+            --assign-public-ip true \
             --metadata "{\"ssh_authorized_keys\":\"$SSH_PUBLIC_KEY\"}" \
             --boot-volume-size-in-gbs 100 \
             --wait-for-state RUNNING
 
       - name: Notify success
-        if: success()
+        if: steps.create_instance.outcome == 'success'
         run: |
           curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"✅ OCI ARM instance workflow finished successfully. Check Oracle Cloud Console.\"}" \
+            -d "{\"content\":\"✅ OCI ARM instance created successfully. Check Oracle Cloud Console.\"}" \
             "$DISCORD_WEBHOOK_URL"
 
       - name: Notify failure
         if: failure()
         run: |
           curl -H "Content-Type: application/json" \
-            -d "{\"content\":\"❌ OCI ARM instance creation failed. Most likely out of host capacity. GitHub Actions will retry later.\"}" \
+            -d "{\"content\":\"❌ OCI ARM instance creation failed. Check GitHub Actions logs. If the error says Out of host capacity, just wait for retry.\"}" \
             "$DISCORD_WEBHOOK_URL"
