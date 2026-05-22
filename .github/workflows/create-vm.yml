@@ -104,6 +104,10 @@ jobs:
             echo "status=capacity" >> "$GITHUB_OUTPUT"
             echo "Out of host capacity. Will retry later."
             exit 0
+          elif echo "$OCI_OUTPUT" | grep -qi 'timed out'; then
+            echo "status=timeout" >> "$GITHUB_OUTPUT"
+            echo "OCI endpoint timed out. Will retry later."
+            exit 0
           else
             echo "status=error" >> "$GITHUB_OUTPUT"
             echo "Real error detected."
@@ -119,6 +123,8 @@ jobs:
             MESSAGE="🚀 OCI ARM VM CREATED: 4 OCPU / 24GB RAM / 200GB disk. Disable the workflow now."
           elif [ "$STATUS" = "capacity" ]; then
             MESSAGE="⏳ Out of host capacity. Retrying later for 4 OCPU / 24GB RAM / 200GB disk."
+          elif [ "$STATUS" = "timeout" ]; then
+            MESSAGE="⏳ OCI endpoint timed out. Retrying later for 4 OCPU / 24GB RAM / 200GB disk."
           else
             MESSAGE="❌ OCI VM creation error. Check GitHub Actions logs."
           fi
