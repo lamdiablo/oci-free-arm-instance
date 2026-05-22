@@ -52,13 +52,15 @@ jobs:
       - name: Check existing instance
         id: check
         run: |
+          set +e
+
           RUNNING_COUNT=$(oci compute instance list \
             --compartment-id "$COMPARTMENT_ID" \
             --display-name "$DISPLAY_NAME" \
             --lifecycle-state RUNNING \
             --all \
             --query "length(data)" \
-            --raw-output)
+            --raw-output 2>/tmp/running_error.log)
 
           PROVISIONING_COUNT=$(oci compute instance list \
             --compartment-id "$COMPARTMENT_ID" \
@@ -66,7 +68,13 @@ jobs:
             --lifecycle-state PROVISIONING \
             --all \
             --query "length(data)" \
-            --raw-output)
+            --raw-output 2>/tmp/provisioning_error.log)
+
+          RUNNING_COUNT=${RUNNING_COUNT:-0}
+          PROVISIONING_COUNT=${PROVISIONING_COUNT:-0}
+
+          echo "RUNNING_COUNT=$RUNNING_COUNT"
+          echo "PROVISIONING_COUNT=$PROVISIONING_COUNT"
 
           echo "running_count=$RUNNING_COUNT" >> "$GITHUB_OUTPUT"
           echo "provisioning_count=$PROVISIONING_COUNT" >> "$GITHUB_OUTPUT"
