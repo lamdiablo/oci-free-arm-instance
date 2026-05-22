@@ -1,0 +1,113 @@
+name: Try to Create OCI VM
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  create-vm:
+    runs-on: ubuntu-latest
+
+    env:
+      COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+      SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
+      IMAGE_ID: ${{ secrets.IMAGE_ID }}
+      AD_NAME: ${{ secrets.AD_NAME }}
+
+      OCI_CLI_REGION: ${{ secrets.OCI_CLI_REGION }}
+      OCI_CLI_USER: ${{ secrets.OCI_CLI_USER }}
+      OCI_CLI_TENANCY: ${{ secrets.OCI_CLI_TENANCY }}
+      OCI_CLI_FINGERPRINT: ${{ secrets.OCI_CLI_FINGERPRINT }}
+      OCI_CLI_KEY_CONTENT: ${{ secrets.OCI_CLI_KEY_CONTENT }}
+
+      SSH_PUBLIC_KEY: ${{ secrets.SSH_PUBLIC_KEY }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+
+      DISPLAY_NAME: free-arm-ubuntu
+
+    steps:
+      - name: Install OCI CLI
+        run: |
+          python3 -m pip install --upgrade pip
+          pip3 install oci-cli
+
+      - name: Configure OCI CLI
+        run: |
+          mkdir -p ~/.oci
+          printf "%s" "$OCI_CLI_KEY_CONTENT" > ~/.oci/oci_api_key.pem
+          chmod 600 ~/.oci/oci_api_key.pem
+
+          cat > ~/.oci/config <<EOF
+          [DEFAULT]
+          user=$OCI_CLI_USER
+          fingerprint=$OCI_CLI_FINGERPRINT
+          tenancy=$OCI_CLI_TENANCY
+          region=$OCI_CLI_REGION
+          key_file=~/.oci/oci_api_key.pem
+          EOF
+
+          chmod 600 ~/.oci/config
+
+      - name: Check existing instance
+        id: check
+        run: |
+          RUNNING_COUNT=$(oci compute instance list \
+            --compartment-id "$COMPARTMENT_ID" \
+            --display-name "$DISPLAY_NAME" \
+            --lifecycle-state RUNNING \
+            --all \
+            --query "length(data)" \
+            --raw-output)
+
+          PROVISIONING_COUNT=$(oci compute instance list \
+            --compartment-id "$COMPARTMENT_ID" \
+            --display-name "$DISPLAY_NAME" \
+            --lifecycle-state PROVISIONING \
+            --all \
+            --query "length(data)" \
+            --raw-output)
+
+          echo "running_count=$RUNNING_COUNT" >> "$GITHUB_OUTPUT"
+          echo "provisioning_count=$PROVISIONING_COUNT" >> "$GITHUB_OUTPUT"
+
+      - name: Stop if instance already exists
+        if: steps.check.outputs.running_count != '0' || steps.check.outputs.provisioning_count != '0'
+        run: |
+          echo "Instance already exists or is provisioning. Stop."
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"OCI VM already exists or is provisioning. Workflow stopped.\"}" \
+            "$DISCORD_WEBHOOK_URL"
+
+      - name: Create OCI ARM instance
+        if: steps.check.outputs.running_count == '0' && steps.check.outputs.provisioning_count == '0'
+        run: |
+          set -e
+
+          echo "Trying to create OCI ARM instance..."
+
+          oci compute instance launch \
+            --availability-domain "$AD_NAME" \
+            --compartment-id "$COMPARTMENT_ID" \
+            --display-name "$DISPLAY_NAME" \
+            --shape "VM.Standard.A1.Flex" \
+            --shape-config '{"ocpus":2,"memoryInGBs":12}' \
+            --source-details "{\"sourceType\":\"image\",\"imageId\":\"$IMAGE_ID\"}" \
+            --create-vnic-details "{\"subnetId\":\"$SUBNET_ID\",\"assignPublicIp\":true}" \
+            --metadata "{\"ssh_authorized_keys\":\"$SSH_PUBLIC_KEY\"}" \
+            --boot-volume-size-in-gbs 100 \
+            --wait-for-state RUNNING
+
+      - name: Notify success
+        if: success()
+        run: |
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"✅ OCI ARM instance workflow finished successfully. Check Oracle Cloud Console.\"}" \
+            "$DISCORD_WEBHOOK_URL"
+
+      - name: Notify failure
+        if: failure()
+        run: |
+          curl -H "Content-Type: application/json" \
+            -d "{\"content\":\"❌ OCI ARM instance creation failed. Most likely out of host capacity. GitHub Actions will retry later.\"}" \
+            "$DISCORD_WEBHOOK_URL"
