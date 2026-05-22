@@ -86,19 +86,15 @@ jobs:
             --compartment-id "$COMPARTMENT_ID" \
             --availability-domain "$AD_NAME" \
             --shape "VM.Standard.A1.Flex" \
-            --shape-config '{"ocpus":2,"memoryInGBs":12}' \
+            --shape-config '{"ocpus":4,"memoryInGBs":24}' \
             --subnet-id "$SUBNET_ID" \
             --image-id "$IMAGE_ID" \
             --ssh-authorized-keys-file "/home/runner/my_ssh_key.pub" \
             --assign-public-ip true \
             --display-name "$DISPLAY_NAME" \
-            --boot-volume-size-in-gbs 50 2>&1 || true)
+            --boot-volume-size-in-gbs 200 2>&1 || true)
 
           echo "$OCI_OUTPUT"
-
-          echo "log_data<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$OCI_OUTPUT" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
 
           if echo "$OCI_OUTPUT" | grep -q '"lifecycle-state": "PROVISIONING"'; then
             echo "status=created" >> "$GITHUB_OUTPUT"
@@ -118,12 +114,11 @@ jobs:
         if: always()
         run: |
           STATUS="${{ steps.create_vm.outputs.status }}"
-          LOG="${{ steps.create_vm.outputs.log_data }}"
 
           if [ "$STATUS" = "created" ]; then
-            MESSAGE="🚀 OCI ARM VM CREATED! Disable the workflow now."
+            MESSAGE="🚀 OCI ARM VM CREATED: 4 OCPU / 24GB RAM / 200GB disk. Disable the workflow now."
           elif [ "$STATUS" = "capacity" ]; then
-            MESSAGE="⏳ Waiting for OCI capacity. Will retry later."
+            MESSAGE="⏳ Out of host capacity. Retrying later for 4 OCPU / 24GB RAM / 200GB disk."
           else
             MESSAGE="❌ OCI VM creation error. Check GitHub Actions logs."
           fi
