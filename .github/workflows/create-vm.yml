@@ -3,7 +3,7 @@ name: Try to Create OCI VM
 on:
   workflow_dispatch:
   schedule:
-    - cron: "2-59/5 * * * *"
+    - cron: "3-59/5 * * * *"
 
 jobs:
   create-vm:
