@@ -88,7 +88,6 @@ jobs:
             "$DISCORD_WEBHOOK_URL"
 
       - name: Create OCI ARM instance
-        if: steps.check.outputs.running_count == '0' && steps.check.outputs.provisioning_count == '0'
         run: |
           set -e
 
